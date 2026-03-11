@@ -14,6 +14,8 @@ def cli():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "path", help="Specify the path to the .kn5 model directory.")
+    parser.add_argument(
+        "--stl", action="store_true", help="Export as STL instead of OBJ.")
 
     args = parser.parse_args()
     target_dir = os.path.abspath(args.path)
@@ -33,7 +35,10 @@ def cli():
 
     # Print each file name
     for file in files:
-        convert_to_obj(file)
+        if args.stl:
+            convert_to_stl(file)
+        else:
+            convert_to_obj(file)
 
 
 class kn5Material:
@@ -609,6 +614,62 @@ def read_kn5(file_path, output_dir):
         return textures, materials, meshes
 
 
+def export_stl(model_name, output_dir, nodes: list):
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+
+    stl_path = os.path.join(output_dir, model_name + ".stl")
+    print(f"Exporting {model_name}.stl")
+
+    # Collect all triangles
+    triangles = []
+    for node in nodes:
+        if node.type not in [2, 3]:
+            continue
+        if node.name.startswith("AC_"):
+            continue
+
+        m = node.hmatrix
+        indices = node.indices
+        pos = node.position
+
+        for i in range(len(indices) // 3):
+            verts = []
+            for k in range(3):
+                idx = indices[i * 3 + k]
+                x = pos[idx * 3]
+                y = pos[idx * 3 + 1]
+                z = pos[idx * 3 + 2]
+                vx = m[0][0]*x + m[1][0]*y + m[2][0]*z + m[3][0]
+                vy = m[0][1]*x + m[1][1]*y + m[2][1]*z + m[3][1]
+                vz = m[0][2]*x + m[1][2]*y + m[2][2]*z + m[3][2]
+                verts.append((vx, vy, vz))
+
+            # Compute face normal
+            ax, ay, az = (verts[1][i] - verts[0][i] for i in range(3))
+            bx, by, bz = (verts[2][i] - verts[0][i] for i in range(3))
+            nx = ay * bz - az * by
+            ny = az * bx - ax * bz
+            nz = ax * by - ay * bx
+            length = math.sqrt(nx*nx + ny*ny + nz*nz)
+            if length > 0:
+                nx, ny, nz = nx/length, ny/length, nz/length
+
+            triangles.append(((nx, ny, nz), verts))
+
+    with open(stl_path, "wb") as f:
+        header = b"KN5 STL export" + b" " * (80 - 14)
+        f.write(header)
+        f.write(struct.pack("<I", len(triangles)))
+        for normal, verts in triangles:
+            f.write(struct.pack("<fff", *normal))
+            for v in verts:
+                f.write(struct.pack("<fff", *v))
+            f.write(struct.pack("<H", 0))
+
+    print(f"  {len(triangles)} triangles written to {stl_path}")
+
+
 def convert_to_obj(file_path):
     # extract model name from file and generate output folder
     model_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -616,6 +677,14 @@ def convert_to_obj(file_path):
 
     _, materials, meshes = read_kn5(file_path, output_dir)
     export_obj(model_name, output_dir, materials, meshes)
+
+
+def convert_to_stl(file_path):
+    model_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_dir = os.path.join(os.path.dirname(file_path), "output")
+
+    _, _, meshes = read_kn5(file_path, output_dir)
+    export_stl(model_name, output_dir, meshes)
 
 
 if __name__ == "__main__":
